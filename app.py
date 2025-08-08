@@ -6,7 +6,6 @@ import tempfile
 
 # Updated LangChain imports for latest version
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_huggingface import HuggingFaceEndpoint
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -18,9 +17,76 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 load_dotenv()
 
 # ---------------------------
+# LLM Selection Functions
+# ---------------------------
+def create_llm(llm_choice):
+    """Create LLM based on user choice"""
+    
+    if llm_choice == "OpenAI GPT":
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model="gpt-3.5-turbo",
+                temperature=0.1,
+                api_key=os.getenv("OPENAI_API_KEY")
+            )
+        except ImportError:
+            st.error("OpenAI package not installed. Run: pip install langchain-openai")
+            return None
+        except Exception as e:
+            st.error(f"OpenAI setup failed: {str(e)}")
+            return None
+    
+    elif llm_choice == "Ollama (Local)":
+        try:
+            from langchain_community.llms import Ollama
+            return Ollama(
+                model="llama2",  # or "mistral", "codellama"
+                temperature=0.1
+            )
+        except Exception as e:
+            st.error(f"Ollama setup failed: {str(e)}. Make sure Ollama is installed and running.")
+            return None
+    
+    elif llm_choice == "Hugging Face":
+        try:
+            # Try multiple models in order of preference
+            models_to_try = [
+                "google/flan-t5-base",
+                "microsoft/DialoGPT-medium",
+                "distilbert-base-uncased"
+            ]
+            
+            for model in models_to_try:
+                try:
+                    from langchain_huggingface import HuggingFaceEndpoint
+                    return HuggingFaceEndpoint(
+                        repo_id=model,
+                        temperature=0.1,
+                        max_new_tokens=512,
+                        huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
+                    )
+                except:
+                    continue
+            
+            # Final fallback to community version
+            from langchain_community.llms import HuggingFaceHub
+            return HuggingFaceHub(
+                repo_id="google/flan-t5-base",
+                model_kwargs={"temperature": 0.1, "max_length": 512},
+                huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
+            )
+            
+        except Exception as e:
+            st.error(f"Hugging Face setup failed: {str(e)}")
+            return None
+    
+    return None
+
+# ---------------------------
 # Core RAG Chain Function
 # ---------------------------
-def create_rag_chain(uploaded_file):
+def create_rag_chain(uploaded_file, llm_choice):
     """
     Builds a Retrieval-Augmented Generation (RAG) chain from an uploaded PDF.
     """
@@ -52,26 +118,20 @@ def create_rag_chain(uploaded_file):
         )
         vectorstore = FAISS.from_documents(split_docs, embeddings)
 
-        # 3. Create the LLM with updated syntax
-        llm = HuggingFaceEndpoint(
-            repo_id="google/flan-t5-xxl",
-            temperature=0.1,
-            max_new_tokens=512,
-            huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
-        )
+        # 3. Create the LLM
+        llm = create_llm(llm_choice)
+        if llm is None:
+            raise ValueError(f"Failed to initialize {llm_choice} LLM")
 
         # 4. Create the prompt template
-        prompt_template = """
-        Answer the user's question based only on the following context. If you cannot find the answer in the context, say "I cannot find this information in the provided document."
+        prompt_template = """You are a helpful AI assistant. Answer the question based on the provided context. If you cannot find the answer in the context, say "I cannot find this information in the provided document."
 
-        <context>
-        {context}
-        </context>
+Context: {context}
 
-        Question: {input}
+Question: {input}
 
-        Answer:
-        """
+Answer:"""
+        
         prompt = ChatPromptTemplate.from_template(prompt_template)
 
         # 5. Create the document chain
@@ -104,16 +164,28 @@ def main():
     st.title("Quantum Analyst ⚛️")
     st.markdown("Upload a financial or legal PDF and ask questions in plain English.")
 
-    # Verify Hugging Face API token is available
-    if not os.getenv("HUGGINGFACEHUB_API_TOKEN"):
-        st.error("⚠️ Missing Hugging Face API token. Please add `HUGGINGFACEHUB_API_TOKEN` to your .env file.")
-        st.markdown("""
-        To get your API token:
-        1. Go to [Hugging Face](https://huggingface.co/settings/tokens)
-        2. Create a new token with 'Read' permissions
-        3. Add it to your .env file as: `HUGGINGFACEHUB_API_TOKEN=your_token_here`
-        """)
-        st.stop()
+    # LLM Selection in sidebar
+    with st.sidebar:
+        st.header("🤖 LLM Configuration")
+        llm_choice = st.selectbox(
+            "Choose your LLM:",
+            ["Hugging Face", "OpenAI GPT", "Ollama (Local)"],
+            help="Select which Large Language Model to use"
+        )
+        
+        # Show API key requirements based on selection
+        if llm_choice == "OpenAI GPT":
+            if not os.getenv("OPENAI_API_KEY"):
+                st.error("⚠️ OpenAI API key required in .env file")
+                st.code("OPENAI_API_KEY=your_openai_key_here")
+        elif llm_choice == "Hugging Face":
+            if not os.getenv("HUGGINGFACEHUB_API_TOKEN"):
+                st.error("⚠️ Hugging Face token required in .env file")
+                st.code("HUGGINGFACEHUB_API_TOKEN=your_hf_token_here")
+        elif llm_choice == "Ollama (Local)":
+            st.info("💡 Make sure Ollama is installed and running locally")
+            st.markdown("Install: `curl -fsSL https://ollama.ai/install.sh | sh`")
+            st.markdown("Run: `ollama pull llama2`")
 
     # Create two columns for better layout
     col1, col2 = st.columns([1, 2])
@@ -142,9 +214,9 @@ def main():
             
             if st.button("🔍 Analyze", type="primary"):
                 if question.strip():
-                    with st.spinner("🤖 Analyzing your document..."):
+                    with st.spinner(f"🤖 Analyzing with {llm_choice}..."):
                         try:
-                            rag_chain = create_rag_chain(uploaded_file)
+                            rag_chain = create_rag_chain(uploaded_file, llm_choice)
                             result = rag_chain.invoke({"input": question})
                             
                             st.success("✅ Analysis Complete!")
@@ -164,7 +236,7 @@ def main():
                                         st.write("---")
                                         
                         except Exception as e:
-                            st.error("❌ An error occurred during processing.")
+                            st.error(f"❌ Error with {llm_choice}: {str(e)}")
                             with st.expander("Error Details"):
                                 st.code(traceback.format_exc())
                 else:
@@ -176,9 +248,15 @@ def main():
     st.markdown("---")
     st.markdown("""
     ### 📋 How to use:
-    1. **Upload** a PDF document using the file uploader
-    2. **Ask** specific questions about the document content
-    3. **Get** AI-powered answers based on the document context
+    1. **Choose** your preferred LLM from the sidebar
+    2. **Upload** a PDF document using the file uploader
+    3. **Ask** specific questions about the document content
+    4. **Get** AI-powered answers based on the document context
+    
+    ### 🔧 LLM Options:
+    - **Hugging Face**: Free, requires HF token, cloud-based
+    - **OpenAI GPT**: Paid, requires API key, high quality
+    - **Ollama**: Free, local installation required, private
     
     ### 💡 Example questions:
     - "What are the key financial metrics mentioned?"
