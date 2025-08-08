@@ -1,0 +1,14 @@
+# Python virtual environment
+venv/
+__pycache__/
+
+# Secrets - NEVER commit this file
+.env
+
+# Temporary files created by our app
+temp/
+
+# Large local data files and indexes
+faiss_index/
+*.html
+*.pdf
